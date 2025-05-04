@@ -26,11 +26,11 @@ pub struct Cumulative {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Sweep based propagator for the `cumulative` constraint.
-pub struct CumulativeProfile {
-	start: Vec<IntView>,
-	duration: Vec<IntView>,
-	resource: Vec<IntView>,
-	bound: IntView,
+pub struct CumulativeTimeTable {
+	pub(crate) start: Vec<IntView>,
+	pub(crate) duration: Vec<IntView>,
+	pub(crate) resource: Vec<IntView>,
+	pub(crate) bound: IntVal,
 }
 
 impl<S: SimplificationActions> Constraint<S> for Cumulative {
@@ -48,7 +48,7 @@ impl<S: SimplificationActions> Constraint<S> for Cumulative {
 			.collect();
 		let bound = slv.get_solver_int(self.bound);
 
-		CumulativeProfile::new_in(slv, start, duration, resource, bound);
+		CumulativeTimeTable::new_in(slv, start, duration, resource, bound);
 		Ok(())
 	}
 }
@@ -141,7 +141,7 @@ impl Profile {
 	}
 }
 
-impl CumulativeProfile {
+impl CumulativeTimeTable {
 	pub fn new_in<P: PropagatorInitActions + ?Sized>(
 		solver: &mut P,
 		start: Vec<IntView>,
@@ -149,12 +149,13 @@ impl CumulativeProfile {
 		resource: Vec<IntView>,
 		bound: IntView,
 	) {
+        let b = solver.get_int_lower_bound(bound);
 		let prop = solver.add_propagator(
 			Box::new(Self {
 				start: start.clone(),
 				duration: duration.clone(),
 				resource: resource.clone(),
-				bound,
+				bound: b,
 			}),
 			PriorityLevel::Low,
 		);
@@ -165,7 +166,7 @@ impl CumulativeProfile {
 	}
 }
 
-impl<P, E> Propagator<P, E> for CumulativeProfile
+impl<P, E> Propagator<P, E> for CumulativeTimeTable
 where
 	P: PropagationActions,
 	E: ExplanationActions,
@@ -190,11 +191,13 @@ where
 		let profile = Profile::new(mandatory_parts);
 
 		for i in 0..profile.rectangles.len() {
-			if profile.rectangles[i].resource > actions.get_int_upper_bound(self.bound) {
+			if profile.rectangles[i].resource > self.bound {
 				let mut reason = Vec::new();
 				for i in 0..self.start.len() {
                     reason.push(actions.get_int_lower_bound_lit(self.start[i]));
                     reason.push(actions.get_int_upper_bound_lit(self.start[i]));
+                    reason.push(actions.get_int_lower_bound_lit(self.resource[i]));
+                    reason.push(actions.get_int_lower_bound_lit(self.duration[i]));
 				}
 				return Err(Conflict::new(actions, None, reason));
 			}
@@ -220,7 +223,7 @@ where
                     //
                     if let Some(j) = profile.rectangle_index(t) {
                         if t < mandatory_start || t >= mandatory_end {
-                            if actions.get_int_lower_bound(self.resource[i]) + profile.rectangles[j].resource > actions.get_int_upper_bound(self.bound) {
+                            if actions.get_int_lower_bound(self.resource[i]) + profile.rectangles[j].resource > self.bound {
                                 min_start = t + 1;
 
                             }
@@ -232,6 +235,8 @@ where
                 for i in 0..self.start.len() {
                     reason.push(actions.get_int_lower_bound_lit(self.start[i]));
                     reason.push(actions.get_int_upper_bound_lit(self.start[i]));
+                    reason.push(actions.get_int_lower_bound_lit(self.resource[i]));
+                    reason.push(actions.get_int_lower_bound_lit(self.duration[i]));
 
                 }
                 actions.set_int_lower_bound(
@@ -254,14 +259,11 @@ mod tests {
 	use tracing_test::traced_test;
 
 	use crate::{
-		constraints::cumulative::CumulativeProfile,
-		cumulative,
-		reformulate::InitConfig,
+		constraints::cumulative::CumulativeTimeTable,
 		solver::{
 			int_var::{EncodingType, IntVar},
 			Solver,
 		},
-		Decision, Model,
 	};
 
 	#[test]
@@ -293,7 +295,7 @@ mod tests {
 			EncodingType::Eager,
 		);
 
-		CumulativeProfile::new_in(
+		CumulativeTimeTable::new_in(
 			&mut slv,
 			vec![start_1, start_2, start_3, start_4],
 			vec![2.into(), 2.into(), 2.into(), 2.into()],
