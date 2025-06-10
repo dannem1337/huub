@@ -196,8 +196,9 @@ impl IntDiffnSweep {
 
 			infeasible_fr = Self::infeasible_sweep(&sweep, self.dimensions, all_fr);
 		}
+
 		// Start pruning here
-		if b && sweep[curr_dimension] != self.lb_tracker[curr_obj_idx][curr_dimension] {
+		if sweep[curr_dimension] != self.lb_tracker[curr_obj_idx][curr_dimension] {
 			let reason = self.explain_propagation(
 				actions,
 				all_fr_explain,
@@ -220,6 +221,7 @@ impl IntDiffnSweep {
 				curr_dimension
 			);
 		}
+
 		Ok(b)
 	}
 
@@ -258,7 +260,7 @@ impl IntDiffnSweep {
 
 			infeasible_fr = Self::infeasible_sweep(&sweep, self.dimensions, all_fr);
 		}
-		if b && sweep[curr_dimension] != self.ub_tracker[curr_obj_idx][curr_dimension] {
+		if sweep[curr_dimension] != self.ub_tracker[curr_obj_idx][curr_dimension] {
 			let reason = self.explain_propagation(
 				actions,
 				all_fr_explain,
@@ -282,6 +284,9 @@ impl IntDiffnSweep {
 				curr_dimension
 			);
 		}
+        if !b {
+            trace!("CONFLICT");
+        }
 		Ok(b)
 	}
 
@@ -305,6 +310,7 @@ impl IntDiffnSweep {
 				sweep[rotation] = curr_obj_lb[rotation];
 			}
 		}
+        sweep[curr_dimension] = curr_obj_ub[curr_dimension] + 1;
 		false
 	}
 
@@ -328,6 +334,7 @@ impl IntDiffnSweep {
 				sweep[rotation] = curr_obj_ub[rotation];
 			}
 		}
+        sweep[curr_dimension] = curr_obj_lb[curr_dimension] - 1;
 		false
 	}
 
@@ -894,14 +901,19 @@ where
 				// }
 
 				if self.fixed_in_all_dimensions(o_idx) {
-					let reason = self.explain_conflict(
-						actions,
+                    let reason = self.explain_propagation(
+                        actions,
                         &all_fr_explain,
-						&fr_support,
-						o_idx,
-					);
-					// trace!("CONFLICT assigned {:?}", reason.len());
-					return Err(Conflict::new(actions, None, reason));
+                        &fr_support,
+                        o_idx,
+                        0,
+                        false,
+                    );
+                    actions.set_int_lower_bound(
+                        self.box_posn[o_idx][0],
+                        self.ub_tracker[o_idx][0] + 1,
+                        reason
+                    )?;
 				}
 				let mut all_fixed = true;
 				for d in 0..self.dimensions {
@@ -914,19 +926,19 @@ where
 						&all_fr,
 						&all_fr_explain,
 					)?;
-					if !fixed && !b1 {
-						// Conflict since there is no feasible origin in this dimension
-						let reason = self.explain_conflict(
-							actions,
-                            &all_fr_explain,
-							&fr_support,
-							o_idx,
-						);
+					// if !fixed && !b1 {
+					// 	// Conflict since there is no feasible origin in this dimension
+					// 	let reason = self.explain_conflict(
+					// 		actions,
+                    //         &all_fr_explain,
+					// 		&fr_support,
+					// 		o_idx,
+					// 	);
 
-						// trace!("CONFLICT assigned min {}", reason.len());
+					// 	// trace!("CONFLICT assigned min {}", reason.len());
 
-						return Err(Conflict::new(actions, None, reason));
-					}
+					// 	return Err(Conflict::new(actions, None, reason));
+					// }
 
 					let fixed = self.lb_tracker[o_idx][d] == self.ub_tracker[o_idx][d];
 					let b2 = self.prune_max(
@@ -937,18 +949,16 @@ where
 						&all_fr,
 						&all_fr_explain,
 					)?;
-					if !fixed && !b2 {
-						// Conflict since there is no feasible origin in this dimension
-						let reason = self.explain_conflict(
-							actions,
-                            &all_fr_explain,
-							&fr_support,
-							o_idx,
-						);
-						// trace!("CONFLICT assigned max");
-						// trace!("CONFLICT prune_max");
-						return Err(Conflict::new(actions, None, reason));
-					}
+					// if !fixed && !b2 {
+					// 	// Conflict since there is no feasible origin in this dimension
+					// 	let reason = self.explain_conflict(
+					// 		actions,
+                    //         &all_fr_explain,
+					// 		&fr_support,
+					// 		o_idx,
+					// 	);
+					// 	return Err(Conflict::new(actions, None, reason));
+					// }
 					if self.lb_tracker[o_idx][d] != self.ub_tracker[o_idx][d] {
 						all_fixed = false;
 					}
