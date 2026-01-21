@@ -85,8 +85,41 @@ impl<const STRICT: bool, I1, I2> IntDiffnSweep<STRICT, I1, I2> {
 	/// Adjusts the sweep point to find the next potential feasible location
 	/// when pruning upper bounds.
 	///
-	/// This is the analog of [`Self::adjust_sweep_min`], but for
-	/// [`Self::prune_max`], sweeping downwards.
+	/// # Algorithm
+	///
+	/// This is the analog of [`Self::adjust_sweep_min`], but sweeps
+	/// **downwards** from the upper bound to find the largest feasible
+	/// position. When a forbidden region blocks the current sweep point, we
+	/// jump to escape it by moving towards lower bounds.
+	///
+	/// # Rotation Strategy
+	///
+	/// Like `adjust_sweep_min`, dimensions are checked in rotated order with
+	/// the pruning dimension (`curr_dimension`) checked **last**. This ensures
+	/// we find the maximal valid value in `curr_dimension`.
+	///
+	/// # Visual Example (2D case, pruning dimension 0)
+	///
+	/// ```text
+	///   Y
+	///   ^
+	/// 5 |  •③  •②
+	/// 4 |  ╔═══╗   •①     ╔: Forbidden Region
+	/// 3 |  ║ FR║           •: Sweep points
+	/// 2 |  ╚═══╝           ①②③: Jump sequence
+	/// 1 |        ┌────┐
+	/// 0 └────────┴────┘──> X
+	///   0 1 2 3 4 5 6
+	///
+	/// Starting at (5,4), inside forbidden region:
+	/// 1. Jump to (0,4): escapes FR horizontally → in bounds → try dim 1
+	/// 2. Jump to (0,5): still viable → found feasible point ✓
+	/// ```
+	///
+	/// # Returns
+	///
+	/// - `true` if a feasible position was found within the object's domain
+	/// - `false` if no feasible position exists (triggers conflict)
 	fn adjust_sweep_max(
 		sweep: &mut [IntVal],
 		jump: &mut [IntVal],
@@ -99,21 +132,33 @@ impl<const STRICT: bool, I1, I2> IntDiffnSweep<STRICT, I1, I2> {
 		debug_assert_eq!(curr_obj_lb.len(), dimensions);
 		debug_assert_eq!(curr_obj_ub.len(), dimensions);
 
+		// Iterate through dimensions in reverse order, ensuring the pruning
+		// dimension is checked last via modular rotation.
 		for i in (0..dimensions).rev() {
-			// Ensures that we check the dimension we are pruning last
+			// Rotation ensures we check dimension `curr_dimension` last. This
+			// prioritizes finding maximal values in `curr_dimension`.
 			let rotation = (i + curr_dimension) % dimensions;
+
+			// Move sweep point to the jump location in this dimension
 			sweep[rotation] = jump[rotation];
+
+			// Prepare next jump point: lower bound - 1 (to escape forbidden regions)
 			jump[rotation] = curr_obj_lb[rotation] - 1;
-			// If the new sweep point is still within the object's domain,
-			// we have a new candidate.
+
+			// Check if the new sweep point is still within the object's domain
 			if sweep[rotation] >= curr_obj_lb[rotation] {
+				// Found a candidate position - it may or may not be in a forbidden
+				// region, but it's within bounds
 				return true;
 			} else {
-				// Otherwise, this dimension is exhausted. Reset and continue.
+				// This dimension is exhausted (sweep would go out of bounds).
+				// Reset to upper bound and try the next dimension.
 				sweep[rotation] = curr_obj_ub[rotation];
 			}
 		}
-		// No feasible origin exists. Set sweep to cause a conflict.
+
+		// All dimensions exhausted: no feasible position exists within the domain.
+		// Set sweep to a value that will trigger a conflict explanation.
 		sweep[curr_dimension] = curr_obj_lb[curr_dimension] - 1;
 		false
 	}
@@ -121,13 +166,55 @@ impl<const STRICT: bool, I1, I2> IntDiffnSweep<STRICT, I1, I2> {
 	/// Adjusts the sweep point to find the next potential feasible location
 	/// when pruning lower bounds.
 	///
-	/// This function implements the "sweep" logic. It iterates through the
-	/// dimensions and moves the `sweep` point to the `jump` location in one
-	/// dimension at a time. If the new `sweep` coordinate is still within the
-	/// object's domain, a potential new location is found, and the function
-	/// returns `true`. If the sweep goes out of bounds in all dimensions, it
-	/// means no feasible point was found, and the function returns `false`,
-	/// setting the sweep point to a value that will cause a conflict.
+	/// # Algorithm
+	///
+	/// This function implements a multi-dimensional "sweep" algorithm that
+	/// searches for the next feasible position by escaping forbidden regions.
+	/// When a forbidden region blocks the current sweep point, we must "jump"
+	/// to escape it. The algorithm tries jumping in each dimension, checking
+	/// if the new position is still within the object's domain.
+	///
+	/// # Rotation Strategy
+	///
+	/// The dimensions are checked in a rotated order: we check the pruning
+	/// dimension (`dim`) **last**. This is crucial because we want to find
+	/// the minimal valid value in dimension `dim`, so we exhaust all other
+	/// dimensions first before advancing `dim`.
+	///
+	/// Example for 2D (dim=0):
+	/// ```text
+	/// Iteration 0: rotation = (0 + 0) % 2 = 0  (check dim 0)
+	/// Iteration 1: rotation = (1 + 0) % 2 = 1  (check dim 1)
+	/// ```
+	///
+	/// Example for 2D (dim=1):
+	/// ```text
+	/// Iteration 0: rotation = (0 + 1) % 2 = 1  (check dim 1)
+	/// Iteration 1: rotation = (1 + 1) % 2 = 0  (check dim 0)
+	/// ```
+	///
+	/// # Visual Example (2D case, pruning dimension 0)
+	///
+	/// ```text
+	///   Y
+	///   ^
+	/// 5 |        ┌────┐
+	/// 4 |  ╔═══╗ │ FR │  ╔: Forbidden Region
+	/// 3 |  ║ FR║ └────┘  •: Sweep points
+	/// 2 |  ╚═══╝   •①      ①②③: Jump sequence
+	/// 1 |     •②  •③
+	/// 0 └─────────────> X
+	///   0 1 2 3 4 5 6
+	///
+	/// Starting at (1,1), inside forbidden region:
+	/// 1. Jump to (4,1): escapes FR horizontally → in bounds → try dim 1
+	/// 2. Jump to (4,2): still viable → found feasible point ✓
+	/// ```
+	///
+	/// # Returns
+	///
+	/// - `true` if a feasible position was found within the object's domain
+	/// - `false` if no feasible position exists (triggers conflict)
 	fn adjust_sweep_min(
 		sweep: &mut [IntVal],
 		jump: &mut [IntVal],
@@ -140,23 +227,33 @@ impl<const STRICT: bool, I1, I2> IntDiffnSweep<STRICT, I1, I2> {
 		debug_assert_eq!(obj_lb.len(), dimensions);
 		debug_assert_eq!(obj_ub.len(), dimensions);
 
+		// Iterate through dimensions in reverse order, ensuring the pruning
+		// dimension is checked last via modular rotation.
 		for i in (0..dimensions).rev() {
-			// Ensures that we check the dimension we are pruning last
+			// Rotation ensures we check dimension `dim` last. This prioritizes
+			// finding minimal values in `dim` by first exhausting other dimensions.
 			let rotation = (i + dim) % dimensions;
+
+			// Move sweep point to the jump location in this dimension
 			sweep[rotation] = jump[rotation];
+
+			// Prepare next jump point: upper bound + 1 (to escape forbidden regions)
 			jump[rotation] = obj_ub[rotation] + 1;
-			// If the new sweep point is still within the object's domain,
-			// we have found a new candidate point to check.
+
+			// Check if the new sweep point is still within the object's domain
 			if sweep[rotation] <= obj_ub[rotation] {
+				// Found a candidate position - it may or may not be in a forbidden
+				// region, but it's within bounds
 				return true;
 			} else {
-				// Otherwise, this dimension is exhausted. Reset sweep point to the
-				// lower bound and try the next dimension.
+				// This dimension is exhausted (sweep would go out of bounds).
+				// Reset to lower bound and try the next dimension.
 				sweep[rotation] = obj_lb[rotation];
 			}
 		}
-		// If all dimensions are exhausted, no feasible origin exists.
-		// Set the sweep point to a value that guarantees a conflict.
+
+		// All dimensions exhausted: no feasible position exists within the domain.
+		// Set sweep to a value that will trigger a conflict explanation.
 		sweep[dim] = obj_ub[dim] + 1;
 		false
 	}
