@@ -2,7 +2,6 @@
 //! enforces that a number of k-dimensional hyperrectangles do not overlap.
 
 use std::{
-	any::TypeId,
 	cmp::{self, Ordering},
 	iter::{repeat_with, zip},
 	ops::AddAssign,
@@ -11,7 +10,7 @@ use std::{
 use itertools::multizip;
 
 use crate::{
-	IntLitMeaning, IntVal,
+	IntDecision, IntLitMeaning, IntVal,
 	actions::{
 		ConstructionActions, InitActions, IntDecisionActions, IntInspectionActions,
 		ReasoningContext, ReasoningEngine, ReformulationActions, TrailingActions,
@@ -23,6 +22,30 @@ use crate::{
 	reformulate::ReformulationError,
 	solver::{IntView, activation_list::IntPropCond, queue::PriorityLevel, trail::TrailedInt},
 };
+
+/// Trait to determine if a type requires bounds in explanation clauses.
+///
+/// When size variables are constants ([`IntVal`]), their values are already
+/// known and don't need to be included in explanations. When size variables
+/// are decision variables ([`IntView`]), their lower bounds must be included
+/// in explanations to fully justify the propagation.
+trait RequiresBoundsInExplanation {
+	/// Returns `true` if this type requires bounds to be included in
+	/// explanations.
+	const REQUIRES_BOUNDS: bool;
+}
+
+impl RequiresBoundsInExplanation for IntVal {
+	const REQUIRES_BOUNDS: bool = false;
+}
+
+impl RequiresBoundsInExplanation for IntView {
+	const REQUIRES_BOUNDS: bool = true;
+}
+
+impl RequiresBoundsInExplanation for IntDecision {
+	const REQUIRES_BOUNDS: bool = true;
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// The [`IntDiffnSweep`] propagator ensures that a set of k-dimensional
@@ -189,14 +212,15 @@ impl<const STRICT: bool, I1, I2> IntDiffnSweep<STRICT, I1, I2> {
 	where
 		Ctx: ReasoningContext + ?Sized,
 		I1: IntDecisionActions<Ctx>,
-		I2: IntInspectionActions<Ctx>,
+		I2: IntInspectionActions<Ctx> + RequiresBoundsInExplanation,
 	{
 		let mut reason = Vec::new();
 		for (region, support) in forbidden_regions.iter() {
 			for d in 0..self.num_dimensions() {
-				// If sizes are not [`IntVal`], their lower bounds contribute to the
-				// forbidden region and must be part of the explanation.
-				if TypeId::of::<I2>() != TypeId::of::<IntVal>() {
+				// If sizes are decision variables (not constants), their lower
+				// bounds contribute to the forbidden region and must be part of the
+				// explanation.
+				if I2::REQUIRES_BOUNDS {
 					reason.push(self.size[[*support, d]].lower_bound_lit(ctx));
 				}
 				let mut possible_ub = self.origin_ub[[*support, d]];
@@ -245,13 +269,14 @@ impl<const STRICT: bool, I1, I2> IntDiffnSweep<STRICT, I1, I2> {
 	where
 		Ctx: ReasoningContext + ?Sized,
 		I1: IntDecisionActions<Ctx>,
-		I2: IntInspectionActions<Ctx>,
+		I2: IntInspectionActions<Ctx> + RequiresBoundsInExplanation,
 	{
 		let mut reason: Vec<_> = Vec::new();
 		for d in 0..self.num_dimensions() {
-			// If sizes are not [`IntVal`], their lower bounds contribute to the
-			// forbidden region and must be part of the explanation.
-			if TypeId::of::<I2>() != TypeId::of::<IntVal>() {
+			// If sizes are decision variables (not constants), their lower
+			// bounds contribute to the forbidden region and must be part of the
+			// explanation.
+			if I2::REQUIRES_BOUNDS {
 				reason.push(self.size[[obj, d]].lower_bound_lit(ctx));
 			}
 
@@ -452,7 +477,7 @@ impl<const STRICT: bool, I1, I2> IntDiffnSweep<STRICT, I1, I2> {
 	where
 		E: ReasoningEngine,
 		I1: SolverIntView<E>,
-		I2: SolverIntView<E>,
+		I2: SolverIntView<E> + RequiresBoundsInExplanation,
 	{
 		// `sweep` is the current point being checked for feasibility.
 		let mut sweep = self.origin_ub.row(obj).to_vec();
@@ -510,7 +535,7 @@ impl<const STRICT: bool, I1, I2> IntDiffnSweep<STRICT, I1, I2> {
 	where
 		E: ReasoningEngine,
 		I1: SolverIntView<E>,
-		I2: SolverIntView<E>,
+		I2: SolverIntView<E> + RequiresBoundsInExplanation,
 	{
 		// `sweep` is the current point being checked for feasibility.
 		let mut sweep = self.origin_lb.row(obj).to_vec();
@@ -595,7 +620,7 @@ impl<const STRICT: bool, E, I1, I2> Constraint<E> for IntDiffnSweep<STRICT, I1, 
 where
 	E: ReasoningEngine,
 	I1: ModelIntView<E>,
-	I2: ModelIntView<E>,
+	I2: ModelIntView<E> + RequiresBoundsInExplanation,
 {
 	fn simplify(
 		&mut self,
@@ -639,7 +664,7 @@ impl<const STRICT: bool, E, I1, I2> Propagator<E> for IntDiffnSweep<STRICT, I1, 
 where
 	E: ReasoningEngine,
 	I1: SolverIntView<E>,
-	I2: SolverIntView<E>,
+	I2: SolverIntView<E> + RequiresBoundsInExplanation,
 {
 	fn initialize(&mut self, ctx: &mut E::InitializationCtx<'_>) {
 		ctx.set_priority(PriorityLevel::Lowest);
